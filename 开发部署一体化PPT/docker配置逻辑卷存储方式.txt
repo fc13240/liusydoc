@@ -1,0 +1,209 @@
+
+1 找盘 fdisk -l
+2 分区 fdisk /dev/sda 分区 （p 查看、n创建、p*主分区_E扩展、w保存）
+3 ls /dev/sda3 查生效否
+4 partprobe 生效
+5 ls /dev/sda3 查到生效了。 
+
+『”
+Direct-lvm安装与配置：
+
+	—1 保存文件并关闭Docker守护进程。如果之前使用了loop设备，则rm -rf /var/lib/docker
+	—2 确认有lvm2包，该包中包含逻辑分区所需的依赖文件。如没有则安装。
+	—3 选择一块空闲磁盘，创建逻辑分区
+“』
+6、pvcreate /dev/sda3 创建物理卷
+7、创建docker分区组
+  vgcreate vg-docker /dev/sda3 创建卷分组
+
+
+8、创建一个5GB的逻辑卷（rmetadata使用）
+  lvcreate -L 5G -n metadata vg-docker
+
+9、 创建一个90GB的逻辑卷（dockerdata使用）
+  —lvcreate -L 95G -n dockerdata vg-docker
+  lvcreate  -l  100%FREE  -n dockerdata vg-docker
+
+10、 安装docker 
+	yum -y install lvm2 docker
+
+
+11、修改docker配置文件
+  vi /etc/sysconfig/docker
+  OPTION后面添加'  --storage-driver=devicemapper --storage-opt dm.datadev=/dev/vg-docker/dockerdata --storage-opt dm.metadatadev=/dev/vg-docker/metadata’
+
+12、注意：安装完docker之后不能启动docker服务，要先执行docker-storage-setup命令，
+然后再启动docker
+systemctl  start docker
+
+
+-----------刘树友
+
+参考文档：https://docs.docker.com/v1.9/engine/userguide/storagedriver/device-mapper-driver/
+
+
+
+
+删除
+[root@env1 ~]# pvremove  vg-docker     /dev/sda4   --force 
+  Device vg-docker not found
+  PV /dev/sda4 belongs to Volume Group vg-docker so please use vgreduce first.
+  (If you are certain you need pvremove, then confirm by using --force twice.)
+[root@env1 ~]# 
+[root@env1 ~]# 
+[root@env1 ~]# 
+[root@env1 ~]# vgremove  vg-docker     /dev/sda4   --force 
+  Volume group "vg-docker" successfully removed
+  Volume group "sda4" not found
+  Cannot process volume group sda4
+[root@env1 ~]# 
+[root@env1 ~]# 
+[root@env1 ~]# vgs
+  VG     #PV #LV #SN Attr   VSize   VFree
+  centos   1   4   0 wz--n- 816.00g    0 
+
+
+
+1、物理卷,需要安装系统之前留下足够的硬盘空间，安装好系统之后可以扩容现有卷组
+，或者新建卷组
+
+fdisk  /dev/sda 添加分区
+partprobe   使新分区立刻生效
+pvcreate /dev/sda3
+
+[root@env2 ~]# pvs
+  PV         VG     Fmt  Attr PSize   PFree 
+  /dev/sda2  centos lvm2 a--   80.08g  4.00m
+  /dev/sda3  centos lvm2 a--  419.42g 70.85g
+[root@env2 ~]# 
+[root@env2 ~]# pvscan 
+  PV /dev/sda2   VG centos   lvm2 [80.08 GiB / 4.00 MiB free]
+  PV /dev/sda3   VG centos   lvm2 [419.42 GiB / 70.85 GiB free]
+  Total: 2 [499.50 GiB] / in use: 2 [499.50 GiB] / in no VG: 0 [0   ]
+
+
+2、卷组
+
+[root@env2 ~]# vgs
+  VG     #PV #LV #SN Attr   VSize   VFree 
+  centos   2   4   0 wz--n- 499.50g 70.86g
+[root@env2 ~]# 
+[root@env2 ~]# vgscan 
+  Reading all physical volumes.  This may take a while...
+  Found volume group "centos" using metadata type lvm2
+
+卷组扩容，可以把现在的卷组扩容，然后把docker数据存放到这个卷组里面。
+如果已经启动了docker，那只能把/var/lib/docker 删了重装docker
+vgcreate  centos /dev/sda3  创建卷组
+
+[root@localhost ~]# vgextend  centos  /dev/sda3  扩容卷组
+  Volume group "centos" successfully extended
+[root@localhost ~]# vgs
+  VG     #PV #LV #SN Attr   VSize   VFree  
+  centos   2   2   0 wz--n- 199.50g 149.11g
+
+
+3、修改配置文件，添加卷组的名字
+[root@env2 ~]# cat /etc/sysconfig/docker-storage-setup 
+# Edit this file to override any configuration options specified in
+# /usr/lib/docker-storage-setup/docker-storage-setup.
+#
+# For more details refer to "man docker-storage-setup"
+VG="centos"
+
+
+4、注意：安装完docker之后不能启动docker服务，要先执行docker-storage-setup命令，
+然后再启动docker
+
+[root@localhost ~]# docker-storage-setup 
+  Rounding up size to full physical extent 208.00 MiB
+  Logical volume "docker-poolmeta" created.
+  Logical volume "docker-pool" created.
+  WARNING: Converting logical volume centos/docker-pool and centos/docker-poolmeta to pool's data and metadata volumes.
+  THIS WILL DESTROY CONTENT OF LOGICAL VOLUME (filesystem etc.)
+  Converted centos/docker-pool to thin pool.
+  Logical volume "docker-pool" changed.
+
+
+数据放在卷组里面
+
+
+[root@env2 ~]# docker info
+Containers: 7
+Images: 13
+Storage Driver: devicemapper
+ Pool Name: centos-docker--pool
+ Pool Blocksize: 524.3 kB
+ Backing Filesystem: xfs
+ Data file: 
+ Metadata file: 
+ Data Space Used: 4.787 GB
+ Data Space Total: 51.08 GB
+ Data Space Available: 46.29 GB
+ Metadata Space Used: 823.3 kB
+ Metadata Space Total: 536.9 MB
+ Metadata Space Available: 536 MB
+ Udev Sync Supported: true
+ Deferred Removal Enabled: true
+ Library Version: 1.02.107-RHEL7 (2015-10-14)
+Execution Driver: native-0.2
+Logging Driver: json-file
+Kernel Version: 3.10.0-327.el7.x86_64
+Operating System: CentOS Linux 7 (Core)
+CPUs: 8
+Total Memory: 31.26 GiB
+Name: env2
+ID: 26YA:6YUX:B3NX:JNE6:BLJG:QNSL:KWG6:SQIZ:BRY4:GVG4:I6IX:W2YT
+WARNING: bridge-nf-call-iptables is disabled
+WARNING: bridge-nf-call-ip6tables is disabled
+
+
+[root@env2 docker]# du -sh /var/lib/docker/*
+2.3M	/var/lib/docker/containers
+128K	/var/lib/docker/devicemapper
+5.2M	/var/lib/docker/graph
+8.0K	/var/lib/docker/linkgraph.db
+4.0K	/var/lib/docker/repositories-devicemapper
+0	/var/lib/docker/tmp
+0	/var/lib/docker/trust
+4.0K	/var/lib/docker/volumes
+
+
+[root@env1 ~]# docker info
+Containers: 6
+Images: 12
+Storage Driver: devicemapper
+ Pool Name: docker-253:0-426055-pool
+ Pool Blocksize: 65.54 kB
+ Backing Filesystem: xfs
+ Data file: /dev/loop0
+ Metadata file: /dev/loop1
+ Data Space Used: 5.703 GB
+ Data Space Total: 107.4 GB
+ Data Space Available: 101.7 GB
+ Metadata Space Used: 4.334 MB
+ Metadata Space Total: 2.147 GB
+ Metadata Space Available: 2.143 GB
+ Udev Sync Supported: true
+ Deferred Removal Enabled: false
+ Data loop file: /var/lib/docker/devicemapper/devicemapper/data
+ Metadata loop file: /var/lib/docker/devicemapper/devicemapper/metadata
+ Library Version: 1.02.107-RHEL7 (2015-12-01)
+Execution Driver: native-0.2
+Logging Driver: json-file
+Kernel Version: 3.10.0-229.el7.x86_64
+Operating System: CentOS Linux 7 (Core)
+CPUs: 8
+Total Memory: 31.26 GiB
+Name: env1
+ID: WKDZ:P26Y:AFS4:PA3J:XUUE:ZMWQ:JZRH:AL6R:QKE4:GYX7:OMTY:ES3A
+[root@env1 ~]# du -sh /var/lib/docker/*
+2.6M	/var/lib/docker/containers
+5.4G	/var/lib/docker/devicemapper
+4.5M	/var/lib/docker/graph
+8.0K	/var/lib/docker/linkgraph.db
+4.0K	/var/lib/docker/repositories-devicemapper
+0	/var/lib/docker/tmp
+0	/var/lib/docker/trust
+4.0K	/var/lib/docker/volumes
+
